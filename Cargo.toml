@@ -1,0 +1,17 @@
+[package]
+name = "fe2o3-mail"
+version = "0.1.0"
+edition = "2021"
+authors = ["Geir Isene <g@isene.com>"]
+description = "Email plumbing for the Fe2O3 suite: MIME decoding, HTML to text, and cross-device read state."
+license = "Unlicense"
+repository = "https://github.com/isene/mail"
+
+[lib]
+name = "mail"
+path = "src/lib.rs"
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
