@@ -27,8 +27,14 @@ pub fn body_after_headers(raw: &str) -> usize {
     let is_headers = raw[..at].lines().all(|l| {
         l.starts_with(' ') || l.starts_with('\t') || l.is_empty()
             || l.split_once(':').map(|(name, _)| {
+                // RFC 5322 allows any printable ASCII but colon in a field
+                // name. Letters-digits-hyphen was too strict and threw away
+                // the whole header block over one real header: Microsoft
+                // Information Protection sends `msip_labels:`, and one
+                // underscore meant a 25 KB header chain got read as body,
+                // which decoded to nothing at all.
                 !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                    && name.chars().all(|c| c.is_ascii_graphic() && c != ':')
             }).unwrap_or(false)
     });
     if is_headers { after } else { 0 }
@@ -230,6 +236,40 @@ pub fn normalize_line_endings(s: String) -> String {
 /// [`extract_mime_text_with`] and pass a renderer — the shape of that
 /// rendering is a matter of taste and of what the display can do, so it
 /// does not belong in here.
+/// A message that has headers but no boundary: one part, its encoding
+/// declared in its own headers.
+///
+/// This is the shape a full RFC822 message arrives in when nobody has
+/// split it first — an IMAP client handing over what the server sent.
+/// The multipart walk finds no boundary in it and rightly gives up, so
+/// something has to decode the single part, and this is it.
+///
+/// Returns `None` when there is no header block to speak of, leaving the
+/// caller's own heuristics in charge.
+pub fn decode_single_part(raw: &str) -> Option<String> {
+    let at = body_after_headers(raw);
+    if at == 0 { return None; }
+    let headers = raw[..at].to_lowercase();
+    let body = &raw[at..];
+
+    let is_latin1 = headers.contains("iso-8859") || headers.contains("windows-1252");
+    let decoded = if headers.contains("content-transfer-encoding: base64") {
+        decode_body_bytes(&base64_decode(body.trim()).unwrap_or_default(), is_latin1)
+    } else if headers.contains("content-transfer-encoding: quoted-printable") {
+        decode_body_bytes(&decode_qp_bytes_body(body), is_latin1)
+    } else if is_latin1 {
+        latin1_to_utf8(body.as_bytes())
+    } else {
+        body.to_string()
+    };
+
+    // An HTML-only message is still one part; hand back readable text.
+    if headers.contains("content-type: text/html") {
+        return Some(crate::html::html_to_text(&decoded));
+    }
+    Some(decoded)
+}
+
 pub fn extract_mime_text(raw: &str) -> Option<String> {
     extract_mime_text_depth(raw, 0, &|ical| ical.to_string())
 }
@@ -460,6 +500,21 @@ fn decode_body_bytes(bytes: &[u8], declared_latin1: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_underscore_in_a_header_name_is_still_a_header() {
+        // `msip_labels` is a real header (Microsoft Information
+        // Protection). Rejecting it made the whole block look like body.
+        let raw = "Subject: Hi\r\nmsip_labels:\r\nContent-Type: text/plain\r\n\r\nThe body.";
+        assert!(body_after_headers(raw) > 0);
+        assert_eq!(&raw[body_after_headers(raw)..], "The body.");
+    }
+
+    #[test]
+    fn prose_with_a_colon_is_not_mistaken_for_headers() {
+        let raw = "Hei Geir, se her: noe\n\nMvh";
+        assert_eq!(body_after_headers(raw), 0);
+    }
     use super::*;
 
     #[test]

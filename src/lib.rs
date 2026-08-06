@@ -39,9 +39,17 @@ pub fn body_text(raw: &str, html_fallback: Option<&str>) -> String {
         || raw.lines().any(|l| l.starts_with("--") && l.len() > 5);
 
     let text = if looks_mime {
-        // An attachment-only mail yields nothing; an empty body beats
-        // dumping raw MIME at the reader.
-        mime::extract_mime_text(raw).unwrap_or_default()
+        // The walk first. When it finds no boundary this is not multipart
+        // at all — a whole RFC822 message with one part, which is what an
+        // IMAP client hands over. Decode that part by its own headers
+        // rather than showing nothing, which is what a caller passing
+        // full messages used to get.
+        mime::extract_mime_text(raw)
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| mime::decode_single_part(raw))
+            // An attachment-only mail yields nothing; an empty body beats
+            // dumping raw MIME at the reader.
+            .unwrap_or_default()
     } else if mime::looks_base64(raw) {
         match mime::base64_decode(raw.trim()) {
             Some(bytes) => String::from_utf8(bytes.clone())
@@ -101,6 +109,46 @@ mod tests {
         let out = body_text("", Some("<p>Hello</p><p>There</p>"));
         assert!(out.contains("Hello"));
         assert!(out.contains("There"));
+    }
+
+    #[test]
+    fn a_whole_message_with_one_base64_part_still_reads() {
+        // The shape an IMAP client hands over: headers and body together,
+        // no multipart boundary anywhere. The Content-Type header made
+        // this look like MIME, the walk found no boundary, and the reader
+        // got a blank screen.
+        let body = "SGVpIMOlIGRlcgpNdmg=";   // "Hei å der\nMvh"
+        let raw = format!(
+            "From: A <a@example.com>\r\nSubject: Hi\r\n\
+             Content-Type: text/plain; charset=\"utf-8\"\r\n\
+             Content-Transfer-Encoding: base64\r\nMIME-Version: 1.0\r\n\r\n{}",
+            body,
+        );
+        let out = body_text(&raw, None);
+        assert!(out.contains("Hei å der"), "got {:?}", out);
+    }
+
+    #[test]
+    fn a_whole_message_with_one_qp_part_still_reads() {
+        let raw = "Subject: Hi\r\nContent-Type: text/plain\r\n\
+                   Content-Transfer-Encoding: quoted-printable\r\n\r\n\
+                   Hei =C3=A5 der";
+        assert!(body_text(raw, None).contains("Hei å der"));
+    }
+
+    #[test]
+    fn a_multipart_message_is_still_walked() {
+        // The single-part fallback must not steal multipart's job. Four
+        // lines, because three or fewer beside an HTML alternative is
+        // taken for a stub — see the module docs.
+        let raw = "Content-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+                   --b\r\nContent-Type: text/plain\r\n\r\n\
+                   The plain part.\r\nWith a second line.\r\n\
+                   And a third.\r\nAnd a fourth, so it is no stub.\r\n\
+                   --b\r\nContent-Type: text/html\r\n\r\n<p>ignored</p>\r\n--b--\r\n";
+        let out = body_text(raw, None);
+        assert!(out.contains("The plain part"), "got {:?}", out);
+        assert!(!out.contains("ignored"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 # mail
 
-![version](https://img.shields.io/badge/version-0.1.0-blue) ![crate](https://img.shields.io/badge/crate-fe2o3--mail-orange) ![license](https://img.shields.io/badge/license-Unlicense-green) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
+![version](https://img.shields.io/badge/version-0.1.1-blue) ![crate](https://img.shields.io/badge/crate-fe2o3--mail-orange) ![license](https://img.shields.io/badge/license-Unlicense-green) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
 
 Email plumbing for the [Fe₂O₃](https://github.com/isene/fe2o3) suite.
 
@@ -68,6 +68,16 @@ let text = mail::mime::extract_mime_text_with(&raw, &|ical| my_invite_view(ical)
 
 How an invite should look depends on the display and on taste, so it
 belongs to the caller. Same reason there are no colours in here.
+
+## Whole messages, or just bodies
+
+Both work. Give it a body whose encoding a caller already knows, or the
+whole RFC822 message straight off an IMAP socket — headers, one part, no
+boundary in sight — and it decodes either.
+
+That second shape used to come back blank: the `Content-Type` header made
+it look like MIME, the multipart walk found no boundary and gave up, and
+nothing else took a turn.
 
 ## Two rules that will surprise you
 
