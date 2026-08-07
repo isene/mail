@@ -41,12 +41,12 @@ authoritative device:
 | Event | Effect |
 |---|---|
 | Read on the laptop | Read everywhere |
-| Merely opened on a phone | Nothing |
-| Explicitly marked on a phone | Read everywhere |
+| Anything on a phone | Stays on that phone |
 
 That falls out of what each side *writes*, not from a special case in
-the merge: the laptop publishes every read, a phone publishes only the
-explicit ones. Both merge identically, newest timestamp wins.
+the merge: the laptop publishes, a phone reads and keeps its own
+decisions local. This module is only the merge, and does not know which
+side it is running on — newest timestamp wins, whoever wrote it.
 
 Note what is **not** used: the server's `\Seen` flag. Mail arrives here
 through a fetcher that never writes flags back, so the server has no

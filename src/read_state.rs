@@ -3,13 +3,13 @@
 //! The rule is deliberately asymmetric, because the laptop is the
 //! authoritative device:
 //!
-//!   * read on the laptop        → read everywhere
-//!   * merely opened on a phone  → nothing at all
-//!   * explicitly marked on a phone → read everywhere
+//!   * read on the laptop  → read everywhere
+//!   * anything on a phone → stays on that phone
 //!
 //! That falls out of what each side *writes* rather than from any
-//! special case here. The laptop publishes every read; a phone
-//! publishes only the explicit ones. Both then merge the same way.
+//! special case here. The laptop publishes; a phone reads and keeps its
+//! own decisions to itself. This module is only the merge, and does not
+//! know or care which side it is running on.
 //!
 //! Storage is one file per device in a shared folder — the same shape
 //! the watchit ratings use, for the same reason: two writers on one
@@ -99,9 +99,8 @@ mod tests {
     }
 
     #[test]
-    fn opening_on_the_phone_says_nothing() {
-        // The phone's file simply has no entry for a message it merely
-        // displayed, so the laptop's unread state stands.
+    fn a_device_that_publishes_nothing_changes_nothing() {
+        // A phone writes no file at all, so the laptop's state stands.
         let all = merge_all(vec![
             r#"{"a@x": {"read": false, "ts": 100}}"#,   // laptop: unread
             r#"{}"#,                                     // phone: opened, silent
@@ -110,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_mark_on_the_phone_reaches_the_laptop() {
+    fn the_newest_mark_wins() {
         let all = merge_all(vec![
             r#"{"a@x": {"read": false, "ts": 100}}"#,
             r#"{"a@x": {"read": true,  "ts": 200}}"#,
