@@ -2,7 +2,7 @@
 
 # mail
 
-![version](https://img.shields.io/badge/version-0.1.1-blue) ![crate](https://img.shields.io/badge/crate-fe2o3--mail-orange) ![license](https://img.shields.io/badge/license-Unlicense-green) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
+![version](https://img.shields.io/badge/version-0.2.0-blue) ![crate](https://img.shields.io/badge/crate-fe2o3--mail-orange) ![license](https://img.shields.io/badge/license-Unlicense-green) ![Stay Amazing](https://img.shields.io/badge/Stay-Amazing-important)
 
 Email plumbing for the [Fe₂O₃](https://github.com/isene/fe2o3) suite.
 
@@ -21,6 +21,7 @@ No I/O, no platform APIs, no terminal escapes. Give it bytes, get back text.
 |---|---|
 | `mime` | Quoted-printable, base64, RFC 2047 header words, latin-1 rescue, and the multipart walk that finds the readable part among the alternatives, attachments and calendar invites |
 | `html` | HTML mail reduced to text — tables to markdown, entities decoded, invisible formatting characters dropped |
+| `attach` | The files hanging off a message: listed cheaply, fetched one at a time |
 | `read_state` | Which messages have been read, merged across devices |
 
 ```rust

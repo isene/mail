@@ -431,7 +431,7 @@ fn decode_qp_bytes(s: &str) -> Vec<u8> {
 }
 
 /// Decode quoted-printable to raw bytes (for charset-aware conversion).
-fn decode_qp_bytes_body(s: &str) -> Vec<u8> {
+pub(crate) fn decode_qp_bytes_body(s: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(s.len());
     let input = s.as_bytes();
     let mut i = 0;

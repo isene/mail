@@ -9,11 +9,14 @@
 //!   rescue, and the multipart walk that finds the text among the
 //!   alternatives and attachments.
 //! * [`html`] — HTML mail reduced to readable text.
+//! * [`attach`] — the files hanging off a message, listed cheaply and
+//!   fetched one at a time.
 //! * [`read_state`] — which messages have been read, merged across
 //!   devices under a rule that keeps the laptop authoritative.
 //!
 //! No I/O and no platform APIs: give it bytes, get back text.
 
+pub mod attach;
 pub mod html;
 pub mod mime;
 pub mod read_state;
