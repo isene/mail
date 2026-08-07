@@ -94,12 +94,15 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn content_type_of(headers: &str) -> String {
+/// `None` when the part declares no type at all — which is the tell for
+/// the epilogue after the closing boundary, not for a real part.
+fn content_type_of(headers: &str) -> Option<String> {
     let lower = headers.to_lowercase();
-    let Some(at) = lower.find("content-type:") else { return "application/octet-stream".into() };
-    headers[at + 13..]
+    let at = lower.find("content-type:")?;
+    let t = headers[at + 13..]
         .split(|c| c == ';' || c == '\r' || c == '\n')
-        .next().unwrap_or("").trim().to_string()
+        .next().unwrap_or("").trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
 }
 
 fn decode(headers: &str, body: &str) -> Vec<u8> {
@@ -113,19 +116,42 @@ fn decode(headers: &str, body: &str) -> Vec<u8> {
     }
 }
 
-/// Every part that names a file, in the order they appear. The index of
-/// each is what [`bytes`] takes.
+/// Is this part something the reader would call an attachment?
+///
+/// Two ways to qualify: it names a file (so a `.txt` attachment counts,
+/// even though its type is `text/plain`), or it is simply not text and
+/// not a container — an unnamed PDF is still a PDF, and hiding it
+/// because the sender left the name off helps nobody.
+fn is_attachment(headers: &str, body: &str) -> bool {
+    // The trailing junk after the closing boundary has neither, and used
+    // to come through as a phantom zero-byte `application/octet-stream`.
+    if body.trim().is_empty() { return false; }
+    if filename_of(headers).is_some() { return true; }
+    match content_type_of(headers) {
+        Some(ct) => {
+            let ct = ct.to_lowercase();
+            !ct.starts_with("text/") && !ct.starts_with("multipart/")
+        }
+        None => false,
+    }
+}
+
+/// Everything hanging off the message, in the order it appears. The
+/// index of each is what [`bytes`] takes.
 pub fn list(raw: &str) -> Vec<Attachment> {
     let mut found = Vec::new();
     parts(raw, 0, &mut found);
-    found.iter().filter_map(|(headers, body)| {
-        let filename = filename_of(headers)?;
-        Some(Attachment {
-            filename,
-            mime_type: content_type_of(headers),
+    found.iter()
+        .filter(|(headers, body)| is_attachment(headers, body))
+        .enumerate()
+        .map(|(i, (headers, body))| Attachment {
+            filename: filename_of(headers)
+                .unwrap_or_else(|| format!("attachment_{}", i + 1)),
+            mime_type: content_type_of(headers)
+                .unwrap_or_else(|| "application/octet-stream".into()),
             size: decode(headers, body).len() as u64,
         })
-    }).collect()
+        .collect()
 }
 
 /// The contents of one, by its index in [`list`].
@@ -133,7 +159,7 @@ pub fn bytes(raw: &str, index: usize) -> Option<Vec<u8>> {
     let mut found = Vec::new();
     parts(raw, 0, &mut found);
     found.iter()
-        .filter(|(headers, _)| filename_of(headers).is_some())
+        .filter(|(headers, body)| is_attachment(headers, body))
         .nth(index)
         .map(|(headers, body)| decode(headers, body))
 }
@@ -162,6 +188,37 @@ mod tests {
     fn the_bytes_come_back_decoded() {
         assert_eq!(bytes(RAW, 0).as_deref(), Some(&b"Hello PDF"[..]));
         assert_eq!(bytes(RAW, 1), None);
+    }
+
+    #[test]
+    fn an_unnamed_part_still_counts() {
+        // Senders leave the name off; the file is still there.
+        let raw = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nWords.\r\n\
+            --b\r\nContent-Type: application/pdf\r\n\r\ndata\r\n--b--\r\n";
+        let list = list(raw);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].filename, "attachment_1");
+        assert_eq!(list[0].mime_type, "application/pdf");
+    }
+
+    #[test]
+    fn a_text_file_attachment_is_not_mistaken_for_the_body() {
+        let raw = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nWords.\r\n\
+            --b\r\nContent-Type: text/plain; name=\"notes.txt\"\r\n\r\ndata\r\n--b--\r\n";
+        assert_eq!(list(raw).len(), 1);
+        assert_eq!(list(raw)[0].filename, "notes.txt");
+    }
+
+    #[test]
+    fn the_epilogue_is_not_an_attachment() {
+        // Everything after the closing boundary: no type, no name, no
+        // content. It used to arrive as a zero-byte octet-stream.
+        let raw = "Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+            --b\r\nContent-Type: text/plain\r\n\r\nWords.\r\n\
+            --b--\r\n\r\nstray trailing bytes\r\n";
+        assert!(list(raw).is_empty());
     }
 
     #[test]
