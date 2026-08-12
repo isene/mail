@@ -309,7 +309,6 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
     let mut html_part = None;
     let mut cal_part = None;
     for part in &parts {
-        let lower = part.to_lowercase();
         if let Some(header_end) = part.find("\n\n").or_else(|| part.find("\r\n\r\n")) {
             let headers = &part[..header_end];
             let body_start = if part[header_end..].starts_with("\r\n\r\n") { header_end + 4 } else { header_end + 2 };
@@ -329,7 +328,16 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
                 continue;
             }
 
-            if lower.contains("text/plain") {
+            // A forwarded message travels as a whole message, headers and
+            // all. It is an attachment, not this message's body — and its
+            // own Content-Type lines name text/plain, so anything looking
+            // for a type across the part rather than in its headers
+            // adopted the whole thing and printed a page of Received:.
+            if headers_lower.contains("message/rfc822") {
+                continue;
+            }
+
+            if headers_lower.contains("text/plain") {
                 let decoded = if is_qp {
                     let bytes = decode_qp_bytes_body(body);
                     decode_body_bytes(&bytes, is_latin1)
@@ -338,7 +346,7 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
                     decode_body_bytes(&bytes, is_latin1)
                 } else { body.to_string() };
                 if !decoded.trim().is_empty() { text_part = Some(decoded); }
-            } else if lower.contains("text/html") {
+            } else if headers_lower.contains("text/html") {
                 let decoded = if is_qp {
                     let bytes = decode_qp_bytes_body(body);
                     decode_body_bytes(&bytes, is_latin1)
@@ -347,7 +355,7 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
                     decode_body_bytes(&bytes, is_latin1)
                 } else { body.to_string() };
                 html_part = Some(decoded);
-            } else if lower.contains("text/calendar") && cal_part.is_none() {
+            } else if headers_lower.contains("text/calendar") && cal_part.is_none() {
                 let decoded = if is_b64 {
                     base64_decode(body.trim())
                         .and_then(|b| String::from_utf8(b).ok())
@@ -500,6 +508,35 @@ fn decode_body_bytes(bytes: &[u8], declared_latin1: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A forward carries the original as a `message/rfc822` part —
+    /// headers and all, and its own Content-Type lines say text/plain.
+    /// Reading the type off the whole part instead of its headers meant
+    /// the walk adopted it, and the body came out as a page of
+    /// `Received:` lines.
+    #[test]
+    fn an_embedded_message_is_not_the_body() {
+        let raw = "Content-Type: multipart/mixed; boundary=\"b\"\n\
+                   \n\
+                   --b\n\
+                   Content-Type: text/plain; charset=us-ascii\n\
+                   \n\
+                   Here is the brief you asked for.\n\
+                   \n\
+                   --b\n\
+                   Content-Type: message/rfc822\n\
+                   Content-Disposition: attachment\n\
+                   \n\
+                   Received: from mail.example.com (10.0.0.1)\n\
+                   From: someone@example.com\n\
+                   Content-Type: text/plain; charset=utf-8\n\
+                   \n\
+                   The forwarded text.\n\
+                   --b--\n";
+        let got = extract_mime_text(raw).unwrap_or_default();
+        assert!(got.contains("Here is the brief"), "got: {}", got);
+        assert!(!got.contains("Received:"), "got: {}", got);
+    }
 
     #[test]
     fn an_underscore_in_a_header_name_is_still_a_header() {
