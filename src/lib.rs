@@ -18,6 +18,7 @@
 
 pub mod attach;
 pub mod html;
+pub mod ical;
 pub mod mime;
 pub mod read_state;
 
@@ -47,7 +48,9 @@ pub fn body_text(raw: &str, html_fallback: Option<&str>) -> String {
         // IMAP client hands over. Decode that part by its own headers
         // rather than showing nothing, which is what a caller passing
         // full messages used to get.
-        mime::extract_mime_text(raw)
+        // A text/calendar part is rendered as an invitation rather than
+        // shown as the machine format it arrives in; see [`ical`].
+        mime::extract_mime_text_with(raw, &ical::summary)
             .filter(|t| !t.trim().is_empty())
             .or_else(|| mime::decode_single_part(raw))
             // An attachment-only mail yields nothing; an empty body beats
@@ -90,6 +93,36 @@ pub fn body_text(raw: &str, html_fallback: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// An invitation arrives as a `text/calendar` part beside the text
+    /// one. Read as it comes, the body is the machine format; the point
+    /// of the ical module is that a reader gets what a person asks.
+    #[test]
+    fn a_calendar_part_reads_as_an_invitation() {
+        let raw = "Content-Type: multipart/alternative; boundary=\"b\"\n\
+                   \n\
+                   --b\n\
+                   Content-Type: text/plain; charset=utf-8\n\
+                   \n\
+                   .\n\
+                   \n\
+                   --b\n\
+                   Content-Type: text/calendar; method=REQUEST; charset=utf-8\n\
+                   \n\
+                   BEGIN:VCALENDAR\n\
+                   METHOD:REQUEST\n\
+                   BEGIN:VEVENT\n\
+                   SUMMARY:Ledergruppe\n\
+                   DTSTART:20260814T093000\n\
+                   DTEND:20260814T103000\n\
+                   END:VEVENT\n\
+                   END:VCALENDAR\n\
+                   --b--\n";
+        let got = body_text(raw, None);
+        assert!(got.contains("[Calendar Invite]"), "got: {}", got);
+        assert!(got.contains("WHAT:  Ledergruppe"), "got: {}", got);
+        assert!(!got.contains("BEGIN:VEVENT"), "got: {}", got);
+    }
     use super::*;
 
     #[test]

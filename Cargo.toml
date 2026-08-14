@@ -1,6 +1,6 @@
 [package]
 name = "fe2o3-mail"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "Email plumbing for the Fe2O3 suite: MIME decoding, HTML to text, and cross-device read state."
