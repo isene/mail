@@ -289,10 +289,22 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
         // Content starts with a boundary line: use it as the primary boundary
         first_line.unwrap()[2..].trim_end_matches("--").trim().to_string()
     } else if let Some(pos) = raw.find("boundary=") {
+        // RFC 2045: the value is either quoted, and ends at the closing
+        // quote, or a bare token, and ends at a semicolon or whitespace.
+        //
+        // Reading an unquoted one as if it were quoted took everything up
+        // to the next `"` anywhere in the message — thousands of
+        // characters, matching no line, so the walk found no parts at all
+        // and the reader got the raw MIME. Some senders quote the value,
+        // some do not, and one that does not is not malformed.
         let rest = &raw[pos + 9..];
-        let b = rest.trim_start_matches('"').split('"').next()
-            .or_else(|| rest.split_whitespace().next())
-            .unwrap_or("");
+        let b = match rest.strip_prefix('"') {
+            Some(quoted) => quoted.split('"').next().unwrap_or(""),
+            None => rest
+                .split(|c: char| c == ';' || c.is_whitespace())
+                .next()
+                .unwrap_or(""),
+        };
         if b.is_empty() { return None; }
         b.to_string()
     } else {
@@ -308,7 +320,7 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
     let mut text_part = None;
     let mut html_part = None;
     let mut cal_part = None;
-    for part in &parts {
+    for (i, part) in parts.iter().enumerate() {
         if let Some(header_end) = part.find("\n\n").or_else(|| part.find("\r\n\r\n")) {
             let headers = &part[..header_end];
             let body_start = if part[header_end..].starts_with("\r\n\r\n") { header_end + 4 } else { header_end + 2 };
@@ -320,8 +332,13 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
             // Detect charset for proper decoding
             let is_latin1 = headers_lower.contains("iso-8859") || headers_lower.contains("windows-1252");
 
-            // Recurse into nested multipart parts
-            if headers_lower.contains("multipart/") {
+            // Recurse into nested multipart parts — but never into the
+            // first, which is whatever came before the first delimiter:
+            // the message's own headers. It says `multipart/` because
+            // this message is, so recursing on it re-derived the same
+            // boundary and walked the same bytes again, five deep, on
+            // every multipart message opened.
+            if i > 0 && headers_lower.contains("multipart/") {
                 if let Some(result) = extract_mime_text_depth(part, depth + 1, ical) {
                     if text_part.is_none() { text_part = Some(result); }
                 }
@@ -508,6 +525,46 @@ fn decode_body_bytes(bytes: &[u8], declared_latin1: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A boundary the sender did not quote. Read as if it were quoted it
+    /// swallowed the rest of the message, matched no line, and the walk
+    /// came back with nothing — so the reader was shown the raw MIME,
+    /// part headers and `=0A` and all.
+    #[test]
+    fn an_unquoted_boundary_is_still_a_boundary() {
+        let raw = "Content-Type: multipart/alternative;\r\n\
+                   \x20boundary=--b_7496591_500c2b51\r\n\
+                   \r\n\
+                   ----b_7496591_500c2b51\r\n\
+                   Content-Type: text/plain; charset=utf-8\r\n\
+                   Content-Transfer-Encoding: quoted-printable\r\n\
+                   \r\n\
+                   Aktiver kortet ditt=0A\r\n\
+                   ----b_7496591_500c2b51\r\n\
+                   Content-Type: text/html; charset=utf-8\r\n\
+                   \r\n\
+                   <p>Aktiver kortet ditt</p>\r\n\
+                   ----b_7496591_500c2b51--\r\n";
+        let got = extract_mime_text(raw).unwrap_or_default();
+        assert!(got.contains("Aktiver kortet ditt"), "got: {}", got);
+        // None of the machine format, and the quoted-printable decoded.
+        assert!(!got.contains("Content-Type"), "got: {}", got);
+        assert!(!got.contains("=0A"), "got: {}", got);
+    }
+
+    /// The quoted form keeps working, and the value stops at the quote
+    /// rather than running on into the next parameter.
+    #[test]
+    fn a_quoted_boundary_ends_at_the_quote() {
+        let raw = "Content-Type: multipart/alternative; boundary=\"b1\"; charset=utf-8\r\n\
+                   \r\n\
+                   --b1\r\n\
+                   Content-Type: text/plain\r\n\
+                   \r\n\
+                   Hello there\r\n\
+                   --b1--\r\n";
+        assert_eq!(extract_mime_text(raw).unwrap_or_default().trim(), "Hello there");
+    }
 
     /// A forward carries the original as a `message/rfc822` part —
     /// headers and all, and its own Content-Type lines say text/plain.
