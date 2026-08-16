@@ -44,7 +44,12 @@ pub fn html_to_text(html: &str) -> String {
     let mut in_style = false;
     let mut last_was_block = false;
 
-    let lower = html.to_lowercase();
+    // ASCII folding, not Unicode: `to_lowercase` can change a string's
+    // length (İ becomes two chars), and every offset found in this copy
+    // is then used to index the original. Tag names are ASCII, which is
+    // all these searches look for, and ASCII folding is byte-for-byte
+    // aligned with the source.
+    let lower = html.to_ascii_lowercase();
     let chars: Vec<char> = html.chars().collect();
     let lower_chars: Vec<char> = lower.chars().collect();
     let mut i = 0;
@@ -149,7 +154,8 @@ pub fn html_to_text(html: &str) -> String {
 /// downstream format_markdown_tables then lays our Markdown out as a
 /// Unicode-box block.
 fn html_tables_to_markdown(html: &str) -> String {
-    let lower = html.to_lowercase();
+    // ASCII folding: offsets from this copy index `html`. See html_to_text.
+    let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len());
     let mut cursor = 0usize;
     while let Some(rel_start) = lower[cursor..].find("<table") {
@@ -335,7 +341,8 @@ fn table_block_to_markdown(block: &str) -> String {
 /// to plain text; pipe characters are escaped so they don't break the
 /// Markdown we emit.
 fn extract_tr_cells(block: &str) -> Vec<Vec<String>> {
-    let lower = block.to_lowercase();
+    // ASCII folding: offsets from this copy index `block`. See html_to_text.
+    let lower = block.to_ascii_lowercase();
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut cursor = 0usize;
     while let Some(rel) = lower[cursor..].find("<tr") {
@@ -352,13 +359,17 @@ fn extract_tr_cells(block: &str) -> Vec<Vec<String>> {
         let tr_slice = &block[tr_body..tr_end];
         let cells = extract_cells_in_tr(tr_slice);
         if !cells.is_empty() { rows.push(cells); }
-        cursor = tr_end + 5; // skip "</tr>"
+        // A row with no `</tr>` ends at the end of the block, and
+        // stepping over a terminator that is not there walked off the
+        // string.
+        cursor = (tr_end + 5).min(lower.len());
     }
     rows
 }
 
 fn extract_cells_in_tr(tr: &str) -> Vec<String> {
-    let lower = tr.to_lowercase();
+    // ASCII folding: offsets from this copy index `tr`. See html_to_text.
+    let lower = tr.to_ascii_lowercase();
     let mut cells: Vec<String> = Vec::new();
     let mut cursor = 0usize;
     loop {
@@ -411,4 +422,25 @@ fn cell_html_to_text(inner: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `to_lowercase` is not length-preserving — `İ` becomes two chars —
+    /// and every offset found in the lowercased copy is used to index the
+    /// original. A table holding one panicked the whole renderer.
+    #[test]
+    fn a_table_with_a_turkish_dotted_i_does_not_panic() {
+        let html = "<table><tr><td>\u{130}stanbul</td><td>x</td></tr></table>";
+        assert!(html_to_text(html).contains("stanbul"));
+    }
+
+    /// A row that never closes ends at the end of the block, and stepping
+    /// over a `</tr>` that is not there walked off the string.
+    #[test]
+    fn an_unclosed_row_does_not_panic() {
+        assert!(html_to_text("<table><tr><td>one</td><td>two</td></table>").contains("one"));
+    }
 }
