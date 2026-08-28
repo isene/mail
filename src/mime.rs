@@ -161,9 +161,31 @@ pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Convert ISO-8859-1 / Windows-1252 bytes to UTF-8 string.
+/// Windows-1252's 0x80..0x9F, which is the only place it differs from
+/// ISO-8859-1. Latin-1 leaves that range as C1 CONTROL CHARACTERS; cp1252
+/// puts the punctuation people actually type there. A mail that says
+/// windows-1252 and writes an em dash sends byte 0x97, and reading that as
+/// latin1 produced U+0097, a control character, in the middle of a sentence.
+///
+/// The five holes are undefined in cp1252 and become U+FFFD rather than a
+/// control: nothing that is not text should reach a terminal.
+const CP1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}', '\u{017D}', '\u{FFFD}',
+    '\u{FFFD}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{FFFD}', '\u{017E}', '\u{0178}',
+];
+
+/// Convert ISO-8859-1 / Windows-1252 bytes to a UTF-8 string.
+///
+/// Decoded as cp1252, which is what the WHATWG encoding standard says to do
+/// for anything labelled latin1 as well: outside 0x80..0x9F the two are the
+/// same byte for byte, so every Norwegian vowel is untouched.
 pub fn latin1_to_utf8(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
+    bytes.iter()
+        .map(|&b| if (0x80..=0x9F).contains(&b) { CP1252_HIGH[(b - 0x80) as usize] }
+                  else { b as char })
+        .collect()
 }
 
 /// Decode RFC 2047 encoded-words: =?charset?encoding?text?=
@@ -745,5 +767,32 @@ mod adjacent_word_tests {
         // and a plain word IS part of the text.
         assert_eq!(decode_rfc2047("=?utf-8?B?SGVsbG8=?= world"), "Hello world");
         assert_eq!(decode_rfc2047("plain =?utf-8?B?SGVsbG8=?="), "plain Hello");
+    }
+}
+
+#[cfg(test)]
+mod cp1252_tests {
+    use super::latin1_to_utf8;
+
+    #[test]
+    fn the_punctuation_range_is_cp1252_not_control_characters() {
+        // The byte that started this: an em dash from a Windows-1252 mail.
+        assert_eq!(latin1_to_utf8(&[0x97]), "\u{2014}");
+        assert_eq!(latin1_to_utf8(b"fix \x97 thanks"), "fix \u{2014} thanks");
+        // The rest of the range people actually send.
+        assert_eq!(latin1_to_utf8(&[0x91, 0x92]), "\u{2018}\u{2019}");
+        assert_eq!(latin1_to_utf8(&[0x93, 0x94]), "\u{201C}\u{201D}");
+        assert_eq!(latin1_to_utf8(&[0x85]), "\u{2026}");
+        assert_eq!(latin1_to_utf8(&[0x96]), "\u{2013}");
+        assert_eq!(latin1_to_utf8(&[0x80]), "\u{20AC}");
+        // Nothing in that range may come out as a control character, which
+        // is what a terminal cannot lay out and what started this.
+        for b in 0x80u8..=0x9F {
+            let c = latin1_to_utf8(&[b]).chars().next().unwrap();
+            assert!(!c.is_control(), "byte {:#04X} decoded to a control", b);
+        }
+        // Outside the range latin1 and cp1252 agree, so Norwegian survives.
+        assert_eq!(latin1_to_utf8(&[0xE5, 0xF8, 0xE6]), "åøæ");
+        assert_eq!(latin1_to_utf8(b"plain ascii"), "plain ascii");
     }
 }
