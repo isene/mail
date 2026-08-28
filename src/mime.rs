@@ -188,6 +188,20 @@ pub fn latin1_to_utf8(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The charset a header block declares, lowercased.
+///
+/// Pass the headers already lowercased. Returns `None` when no
+/// `charset=` appears, which is the common case and means "assume the
+/// bytes are UTF-8".
+pub fn charset_of(headers_lower: &str) -> Option<String> {
+    let at = headers_lower.find("charset=")? + 8;
+    let rest = headers_lower[at..].trim_start().trim_start_matches('"');
+    let end = rest.find(|c: char| c == '"' || c == ';' || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let label = rest[..end].trim();
+    if label.is_empty() { None } else { Some(label.to_string()) }
+}
+
 /// Decode RFC 2047 encoded-words: =?charset?encoding?text?=
 pub fn decode_rfc2047(s: &str) -> String {
     if !s.contains("=?") { return s.to_string(); }
@@ -281,15 +295,13 @@ pub fn decode_single_part(raw: &str) -> Option<String> {
     let headers = raw[..at].to_lowercase();
     let body = &raw[at..];
 
-    let is_latin1 = headers.contains("iso-8859") || headers.contains("windows-1252");
+    let charset = charset_of(&headers);
     let decoded = if headers.contains("content-transfer-encoding: base64") {
-        decode_body_bytes(&base64_decode(body.trim()).unwrap_or_default(), is_latin1)
+        decode_body_bytes(&base64_decode(body.trim()).unwrap_or_default(), charset.as_deref())
     } else if headers.contains("content-transfer-encoding: quoted-printable") {
-        decode_body_bytes(&decode_qp_bytes_body(body), is_latin1)
-    } else if is_latin1 {
-        latin1_to_utf8(body.as_bytes())
+        decode_body_bytes(&decode_qp_bytes_body(body), charset.as_deref())
     } else {
-        body.to_string()
+        decode_body_bytes(body.as_bytes(), charset.as_deref())
     };
 
     // An HTML-only message is still one part; hand back readable text.
@@ -358,8 +370,7 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
             let is_qp = headers_lower.contains("quoted-printable");
             let is_b64 = headers_lower.contains("base64");
 
-            // Detect charset for proper decoding
-            let is_latin1 = headers_lower.contains("iso-8859") || headers_lower.contains("windows-1252");
+            let charset = charset_of(&headers_lower);
 
             // Recurse into nested multipart parts — but never into the
             // first, which is whatever came before the first delimiter:
@@ -386,19 +397,19 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
             if headers_lower.contains("text/plain") {
                 let decoded = if is_qp {
                     let bytes = decode_qp_bytes_body(body);
-                    decode_body_bytes(&bytes, is_latin1)
+                    decode_body_bytes(&bytes, charset.as_deref())
                 } else if is_b64 {
                     let bytes = base64_decode(body.trim()).unwrap_or_default();
-                    decode_body_bytes(&bytes, is_latin1)
+                    decode_body_bytes(&bytes, charset.as_deref())
                 } else { body.to_string() };
                 if !decoded.trim().is_empty() { text_part = Some(decoded); }
             } else if headers_lower.contains("text/html") {
                 let decoded = if is_qp {
                     let bytes = decode_qp_bytes_body(body);
-                    decode_body_bytes(&bytes, is_latin1)
+                    decode_body_bytes(&bytes, charset.as_deref())
                 } else if is_b64 {
                     let bytes = base64_decode(body.trim()).unwrap_or_default();
-                    decode_body_bytes(&bytes, is_latin1)
+                    decode_body_bytes(&bytes, charset.as_deref())
                 } else { body.to_string() };
                 html_part = Some(decoded);
             } else if headers_lower.contains("text/calendar") && cal_part.is_none() {
@@ -527,29 +538,27 @@ pub(crate) fn decode_qp_bytes_body(s: &str) -> Vec<u8> {
     bytes
 }
 
-/// Decode a body byte buffer using the declared MIME charset, but
-/// don't blindly trust the declaration. Many senders mark UTF-8
-/// content as `charset=iso-8859-1` or `windows-1252` (this is
-/// rampant on transactional mail). Strategy:
+/// Decode a body byte buffer using the declared MIME charset.
 ///
-/// 1. If `declared_latin1` is false (charset says UTF-8 or wasn't
-///    set), interpret as UTF-8, lossy-decode on error.
-/// 2. If `declared_latin1` is true, FIRST try strict UTF-8. If
-///    the bytes happen to be valid UTF-8 that's almost certainly
-///    what they really are — Norwegian "påminnelse" (UTF-8
-///    `0xC3 0xA5`) would otherwise come through as the mojibake
-///    `pÃ¥minnelse` after a literal latin1→utf-8 lift.
-/// 3. Only fall through to `latin1_to_utf8` when strict UTF-8
-///    fails, i.e. the bytes are genuinely 8-bit Latin-1.
-fn decode_body_bytes(bytes: &[u8], declared_latin1: bool) -> String {
-    if declared_latin1 {
-        if let Ok(s) = std::str::from_utf8(bytes) {
-            return s.to_string();
-        }
-        return latin1_to_utf8(bytes);
+/// Valid UTF-8 settles the question first, whatever the header says.
+/// Senders mislabel constantly: a mail that says `iso-8859-1` and sends
+/// UTF-8 is everyday traffic, and lifting those bytes as latin1 turns
+/// "påminnelse" into "pÃ¥minnelse". A run of Big5 or Shift-JIS is
+/// almost never valid UTF-8 by accident, so the test is safe to make
+/// first.
+///
+/// Otherwise the declared label decides, through the WHATWG table:
+/// big5, iso-2022-jp, koi8-r, gb18030 and the windows-125x family all
+/// resolve there. An unknown or missing label falls back to cp1252,
+/// which is what a western sender with 8-bit bytes almost always meant.
+pub fn decode_body_bytes(bytes: &[u8], charset: Option<&str>) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
     }
-    String::from_utf8(bytes.to_vec())
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    match charset.and_then(|c| encoding_rs::Encoding::for_label(c.as_bytes())) {
+        Some(enc) if enc != encoding_rs::UTF_8 => enc.decode(bytes).0.into_owned(),
+        _ => latin1_to_utf8(bytes),
+    }
 }
 
 #[cfg(test)]
@@ -794,5 +803,39 @@ mod cp1252_tests {
         // Outside the range latin1 and cp1252 agree, so Norwegian survives.
         assert_eq!(latin1_to_utf8(&[0xE5, 0xF8, 0xE6]), "åøæ");
         assert_eq!(latin1_to_utf8(b"plain ascii"), "plain ascii");
+    }
+}
+
+#[cfg(test)]
+mod charset_tests {
+    use super::*;
+
+    #[test]
+    fn declared_charset_decides_when_bytes_are_not_utf8() {
+        // Big5 A1 58 is an em dash, A1 F7 a right arrow. Read as UTF-8
+        // both became a pair of replacement characters.
+        let part = "Content-Type: text/plain; charset=\"big5\"\n\
+                    Content-Transfer-Encoding: quoted-printable\n\n=A1=58 og =A1=F7";
+        assert_eq!(decode_single_part(part).unwrap(), "\u{2014} og \u{2192}");
+    }
+
+    #[test]
+    fn utf8_wins_over_a_wrong_label() {
+        let part = "Content-Type: text/plain; charset=iso-8859-1\n\np\u{e5}minnelse";
+        assert_eq!(decode_single_part(part).unwrap(), "p\u{e5}minnelse");
+    }
+
+    #[test]
+    fn cp1252_is_an_alias_the_table_knows() {
+        let part = "Content-Type: text/plain; charset=cp1252\n\
+                    Content-Transfer-Encoding: quoted-printable\n\nen=97dash";
+        assert_eq!(decode_single_part(part).unwrap(), "en\u{2014}dash");
+    }
+
+    #[test]
+    fn charset_of_reads_the_label() {
+        assert_eq!(charset_of("content-type: text/html; charset=\"big5\"").as_deref(), Some("big5"));
+        assert_eq!(charset_of("content-type: text/plain; charset=utf-8\n").as_deref(), Some("utf-8"));
+        assert_eq!(charset_of("content-type: text/plain"), None);
     }
 }

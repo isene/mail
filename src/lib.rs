@@ -24,7 +24,7 @@ pub mod read_state;
 
 pub use html::html_to_text;
 pub use mime::{
-    base64_decode, body_after_headers, decode_quoted_printable, decode_rfc2047,
+    base64_decode, body_after_headers, charset_of, decode_body_bytes, decode_quoted_printable, decode_rfc2047,
     extract_mime_text, latin1_to_utf8, looks_base64, looks_quoted_printable,
 };
 
