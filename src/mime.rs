@@ -204,10 +204,17 @@ pub fn decode_rfc2047(s: &str) -> String {
                     result.push_str(&rest[start..start + 2 + text_start + term + 2]);
                 }
                 rest = &after[text_start + term + 2..];
-                // Skip whitespace between adjacent encoded words
-                if rest.starts_with(' ') || rest.starts_with("\r\n ") || rest.starts_with("\n ") {
-                    let trimmed = rest.trim_start();
-                    if trimmed.starts_with("=?") { rest = trimmed; }
+                // RFC 2047 6.2: whitespace between two adjacent encoded
+                // words is part of neither and is dropped. Between an
+                // encoded word and ordinary text it is real text and stays.
+                //
+                // The run can be anything the folding used: a space, a tab,
+                // or a CRLF and one of those. Matching only " ", "\n " and
+                // "\r\n " left a tab-folded header with a gap in the middle
+                // of a word.
+                let trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
+                if trimmed.len() != rest.len() && trimmed.starts_with("=?") {
+                    rest = trimmed;
                 }
             } else {
                 result.push_str("=?");
@@ -702,5 +709,41 @@ mod tests {
         assert!(plain.contains("SUMMARY:Standup"), "raw ical by default: {:?}", plain);
         let rendered = extract_mime_text_with(raw, &|_| "[Invite]".to_string()).unwrap_or_default();
         assert!(rendered.contains("[Invite]"), "the caller decides: {:?}", rendered);
+    }
+}
+
+#[cfg(test)]
+mod adjacent_word_tests {
+    use super::decode_rfc2047;
+
+    const WANT: &str = "Fw: Dualogの脆弱性対応に関するアンケート回答のお願い";
+    const W1: &str = "=?utf-8?B?Rnc6IER1YWxvZ+OBruiEhuW8seaAp+WvvuW/nOOBq+mWouOBmeOCi+OCog==?=";
+    const W2: &str = "=?utf-8?B?44Oz44Kx44O844OI5Zue562U44Gu44GK6aGY44GE?=";
+
+    #[test]
+    fn adjacent_encoded_words_join_with_nothing_between() {
+        // However the header was unfolded, the two words are adjacent, so
+        // RFC 2047 6.2 says the whitespace between them is not part of
+        // either and has to go.
+        for (label, sep) in [
+            ("space", " "),
+            ("newline + space", "\n "),
+            ("crlf + space", "\r\n "),
+            ("tab", "\t"),
+            ("newline + tab", "\n\t"),
+            ("two spaces", "  "),
+            ("nothing", ""),
+        ] {
+            let got = decode_rfc2047(&format!("{}{}{}", W1, sep, W2));
+            assert_eq!(got, WANT, "separator: {}", label);
+        }
+    }
+
+    #[test]
+    fn a_gap_before_ordinary_text_is_kept() {
+        // The other half of the rule: whitespace between an encoded word
+        // and a plain word IS part of the text.
+        assert_eq!(decode_rfc2047("=?utf-8?B?SGVsbG8=?= world"), "Hello world");
+        assert_eq!(decode_rfc2047("plain =?utf-8?B?SGVsbG8=?="), "plain Hello");
     }
 }
