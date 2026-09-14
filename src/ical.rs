@@ -108,10 +108,12 @@ impl Event {
         let d = fmt_dt(&self.end);
         let day = weekday(&self.start);
         if self.all_day {
-            if self.end.is_empty() || self.end == self.start {
+            // DTEND on an all-day event names the day after the last one.
+            let last = if self.end.is_empty() { self.start.clone() } else { prev_day(&self.end) };
+            if last == self.start {
                 return format!("{} ({}) - All day", s, day);
             }
-            return format!("{} to {} - All day", s, d);
+            return format!("{} to {} - All day", s, fmt_dt(&last));
         }
         if self.start.is_empty() { return String::new(); }
         if self.end.is_empty() { return format!("{} ({})", s, day); }
@@ -236,6 +238,19 @@ fn weekday(s: &str) -> &'static str {
 }
 
 /// An `RRULE` in words: `Every 2 weeks on Monday, Wednesday, 10 times`.
+/// The day before a `YYYYMMDD` date; anything else comes back as it was.
+fn prev_day(date: &str) -> String {
+    let digits = date.chars().take(8).collect::<String>();
+    if digits.len() != 8 || !digits.chars().all(|c| c.is_ascii_digit()) { return date.to_string(); }
+    let (y, m, d): (i32, u32, u32) = (digits[..4].parse().unwrap_or(0), digits[4..6].parse().unwrap_or(1), digits[6..8].parse().unwrap_or(1));
+    let (y, m, d) = if d > 1 { (y, m, d - 1) } else if m > 1 { (y, m - 1, 0) } else { (y - 1, 12, 0) };
+    let d = if d == 0 {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        match m { 2 if leap => 29, 2 => 28, 4 | 6 | 9 | 11 => 30, _ => 31 }
+    } else { d };
+    format!("{:04}{:02}{:02}", y, m, d)
+}
+
 pub fn recurrence(rrule: &str) -> String {
     let mut parts = std::collections::HashMap::new();
     for p in rrule.split(';') {
@@ -323,6 +338,19 @@ mod tests {
     fn one_day_says_the_date_once() {
         let e = Event::parse(INVITE);
         assert_eq!(e.when(), "2026-08-14 09:30 - 10:15 (Friday)");
+    }
+
+    /// A three-day stay is Friday to Sunday, not to the Monday DTEND names,
+    /// and a one-day one is a single date.
+    #[test]
+    fn an_all_day_span_ends_on_its_last_day() {
+        let e = Event::parse("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20250328\r\nDTEND;VALUE=DATE:20250331\r\nEND:VEVENT\r\n");
+        assert_eq!(e.when(), "2025-03-28 to 2025-03-30 - All day");
+        let e = Event::parse("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20250301\r\nDTEND;VALUE=DATE:20250302\r\nEND:VEVENT\r\n");
+        assert_eq!(e.when(), "2025-03-01 (Saturday) - All day");
+        assert_eq!(super::prev_day("20250301"), "20250228");
+        assert_eq!(super::prev_day("20240301"), "20240229");
+        assert_eq!(super::prev_day("20250101"), "20241231");
     }
 
     #[test]

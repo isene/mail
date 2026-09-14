@@ -413,10 +413,15 @@ fn extract_mime_text_depth(raw: &str, depth: usize, ical: &dyn Fn(&str) -> Strin
                 } else { body.to_string() };
                 html_part = Some(decoded);
             } else if headers_lower.contains("text/calendar") && cal_part.is_none() {
+                // Google sends the invite quoted-printable: every `=` in
+                // it arrives as `=3D`, and an emoji in the title as hex.
+                // Undecoded, VALUE=DATE went unseen and RRULE read as junk.
                 let decoded = if is_b64 {
                     base64_decode(body.trim())
                         .and_then(|b| String::from_utf8(b).ok())
                         .unwrap_or_default()
+                } else if is_qp {
+                    decode_body_bytes(&decode_qp_bytes_body(body), charset.as_deref())
                 } else {
                     body.to_string()
                 };
@@ -563,6 +568,20 @@ pub fn decode_body_bytes(bytes: &[u8], charset: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A quoted-printable calendar part reaches the renderer decoded.
+    #[test]
+    fn a_quoted_printable_invite_is_decoded_before_rendering() {
+        let raw = "Content-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+                   --b\r\nContent-Type: text/calendar; charset=\"UTF-8\"; method=REQUEST\r\n\
+                   Content-Transfer-Encoding: quoted-printable\r\n\r\n\
+                   BEGIN:VEVENT\r\nDTSTART;VALUE=3DDATE:20250328\r\nRRULE:FREQ=3DWEEKLY;INTERVAL=3D2;BYDAY=3DFR\r\n\
+                   SUMMARY:Lunch =F0=9F=A7=A1\r\nEND:VEVENT\r\n--b--\r\n";
+        let out = extract_mime_text_with(raw, &|ical| ical.to_string()).unwrap();
+        assert!(out.contains("DTSTART;VALUE=DATE:20250328"), "{}", out);
+        assert!(out.contains("RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=FR"), "{}", out);
+        assert!(out.contains("SUMMARY:Lunch \u{1f9e1}"), "{}", out);
+    }
 
     /// A boundary the sender did not quote. Read as if it were quoted it
     /// swallowed the rest of the message, matched no line, and the walk
